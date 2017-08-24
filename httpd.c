@@ -42,6 +42,7 @@ void not_found(int);
 void serve_file(int, const char *);
 int startup(u_short *);
 void unimplemented(int);
+void *thread(void *);
 
 /**********************************************************************/
 /* A request has caused a call to accept() on the server port to
@@ -472,11 +473,21 @@ void unimplemented(int client)
 
 /**********************************************************************/
 
+void *thread(void *vargp) {
+    int client = *(int*)vargp;
+    pthread_detach(pthread_self());
+    free(vargp);
+
+    accept_request(client);
+    return NULL;
+}
+
 int main(void)
 {
     int server_sock = -1;
     u_short port = 0;
     int client_sock = -1;
+    int *client_sock_p;
     struct sockaddr_in client_name;
     int client_name_len = sizeof(client_name);
     pthread_t newthread;
@@ -492,7 +503,9 @@ int main(void)
         if (client_sock == -1)
             error_die("accept");
         /* accept_request(client_sock); */
-        if (pthread_create(&newthread , NULL, accept_request, client_sock) != 0)
+        client_sock_p  = (int*)malloc(sizeof(int));
+        *client_sock_p = client_sock;
+        if (pthread_create(&newthread , NULL, thread, client_sock_p) != 0)
             perror("pthread_create");
     }
 
