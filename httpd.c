@@ -473,24 +473,113 @@ void unimplemented(int client)
 
 /**********************************************************************/
 
-void *thread(void *vargp) {
-    int client = *(int*)vargp;
-    pthread_detach(pthread_self());
-    free(vargp);
+void client_to_server(int client, int server) {
 
-    accept_request(client);
+    char buf[1024];
+    char c;
+    int numchars = 1;
+    char method[255];
+    int content_length = -1;
+    int i, j;
+
+    numchars = get_line(client, buf, sizeof(buf));
+    send(server, buf, strlen(buf), 0);
+    i = 0; j = 0;
+    while (!ISspace(buf[j]) && (i < sizeof(method) - 1))
+    {
+        method[i] = buf[j];
+        i++; j++;
+    }
+    method[i] = '\0';
+
+    if (strcasecmp(method, "GET") == 0) {
+        while ((numchars > 0) && strcmp("\n", buf)) {
+            numchars = get_line(client, buf, sizeof(buf));
+            send(server, buf, strlen(buf), 0);
+        } 
+    } else {
+        numchars = get_line(client, buf, sizeof(buf));
+        send(server, buf, strlen(buf), 0);
+        while ((numchars > 0) && strcmp("\n", buf)) {
+            buf[15] = '\0';
+            if (strcasecmp(buf, "Content-Length:") == 0)
+                content_length = atoi(&(buf[16]));
+            numchars = get_line(client, buf, sizeof(buf));
+            send(server, buf, strlen(buf), 0);
+        }
+        if (content_length == -1) {
+            bad_request(client);
+        } else {
+            for (i = 0; i < content_length; i++) {
+                recv(client, &c, 1, 0);
+                send(server, &c, 1, 0);
+            }
+        }
+    }
+}
+
+void server_to_client(int server, int client) {
+    char c;
+    while (recv(server, &c, 1, 0) > 0)
+        send(client, &c, 1, 0);
+}
+
+void proxy_request(int client, int proxy_port) {
+    int server;
+    int len;
+    struct sockaddr_in address;
+    int result;
+
+    server = socket(AF_INET, SOCK_STREAM, 0);
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = inet_addr("127.0.0.1");
+    address.sin_port = htons(proxy_port);
+    len = sizeof(address);
+    result = connect(server, (struct sockaddr *)&address, len);
+    if (result == -1) {
+        accept_request(client);
+        return;
+    }
+
+    client_to_server(client, server);
+    server_to_client(server, client);
+
+    close(client);
+    close(server);
+}
+
+void *thread(void *p) {
+    int client = *(int*)p;
+    int proxy_port = *((int*)p+1);
+    pthread_detach(pthread_self());
+    free(p);
+
+    if (proxy_port)
+        proxy_request(client, proxy_port);
+    else
+        accept_request(client);
     return NULL;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     int server_sock = -1;
     u_short port = 0;
+    u_short proxy_port[666];
+    int proxy_num;
     int client_sock = -1;
-    int *client_sock_p;
     struct sockaddr_in client_name;
     int client_name_len = sizeof(client_name);
     pthread_t newthread;
+    int *p = 0;
+    int r = 0;
+    int i;
+
+    if (argc > 1)
+        port = atoi(argv[1]);
+    for (i = 2; i < argc; ++i)
+        proxy_port[i - 2] = atoi(argv[i]);
+    proxy_num = argc - 2;
 
     server_sock = startup(&port);
     printf("httpd running on port %d\n", port);
@@ -503,9 +592,14 @@ int main(void)
         if (client_sock == -1)
             error_die("accept");
         /* accept_request(client_sock); */
-        client_sock_p  = (int*)malloc(sizeof(int));
-        *client_sock_p = client_sock;
-        if (pthread_create(&newthread , NULL, thread, client_sock_p) != 0)
+        p  = (int*)malloc(2 * sizeof(int));
+        p[0] = client_sock;
+        if (proxy_num > 0) {
+            p[1] = proxy_port[r];
+            r = (r + 1) % proxy_num;
+        } else
+            p[1] = 0;
+        if (pthread_create(&newthread , NULL, thread, p) != 0)
             perror("pthread_create");
     }
 
